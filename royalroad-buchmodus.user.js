@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Buchmodus
 // @namespace    rr-buchmodus
-// @version      2.0
+// @version      2.1
 // @description  Liest Royal-Road-Kapitel wie ein Buch: umblättern, Doppelseite, Vollbild (auch iPad), Serifenschrift, Sepia/Dunkel, nahtlos ins nächste Kapitel.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -533,7 +533,12 @@
     let lead = null;
     for (const p of body.querySelectorAll('p, .para')) {
       if (p.classList.contains('scene') || p.closest('table') || !T(p)) continue;
-      if (isHeadLike(p)) { p.classList.add('sub'); continue; }
+      if (isHeadLike(p)) {
+        // Zeile des Autors weglassen, wenn sie nur den Kapiteltitel wiederholt
+        const norm = x => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+        if (norm(T(p)) === norm(d.chapTitle)) { p.remove(); continue; }
+        p.classList.add('sub'); continue;
+      }
       if (/center/.test(p.getAttribute('style') || '')) continue;
       lead = p; break;
     }
@@ -570,6 +575,7 @@
     const ratio = keep ? (s.mode === 'paged' ? (pageCount > 1 ? page / (pageCount - 1) : 0)
       : (clip.scrollHeight > clip.clientHeight ? clip.scrollTop / (clip.scrollHeight - clip.clientHeight) : 0)) : 0;
     apply();
+    pages.style.transform = ''; clip.scrollLeft = 0; // vor dem Messen zurücksetzen
     if (s.mode === 'paged') {
       const cs = getComputedStyle(viewport);
       const vw = viewport.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
@@ -595,9 +601,12 @@
     }
   }
 
+  // Blättern per Verschieben statt Scrollen: Scrollen bleibt am Ende hängen, wenn die letzte
+  // Doppelseite nur eine Spalte hat, und zeigt dann die vorige Seite doppelt
   function go(p) {
     page = Math.max(0, Math.min(pageCount - 1, p));
-    clip.scrollLeft = page * step;
+    clip.scrollLeft = 0;
+    pages.style.transform = page ? 'translateX(' + (-page * step) + 'px)' : '';
     updateInfo();
   }
 
