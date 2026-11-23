@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Buchmodus
 // @namespace    rr-buchmodus
-// @version      1.9
+// @version      2.0
 // @description  Liest Royal-Road-Kapitel wie ein Buch: umblättern, Doppelseite, Vollbild (auch iPad), Serifenschrift, Sepia/Dunkel, nahtlos ins nächste Kapitel.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -52,14 +52,29 @@
   }
 
   // Kopie eines Textblocks ohne versteckte Elemente, Skripte und Fremdformatierung
-  function cleanClone(el, live, hideSels) {
+  function cleanClone(el, live, hideSels, base) {
+    const hasPic = n => n.nodeName === 'IMG' || n.nodeName === 'PICTURE' || !!n.querySelector('img, picture');
     if (live) el.querySelectorAll('*').forEach(n => {
       const cs = getComputedStyle(n);
-      if (cs.display === 'none' || cs.visibility === 'hidden') n.setAttribute('data-rr-hide', '');
+      if ((cs.display === 'none' || cs.visibility === 'hidden') && !hasPic(n)) n.setAttribute('data-rr-hide', '');
     });
     const c = el.cloneNode(true);
     if (live) el.querySelectorAll('[data-rr-hide]').forEach(n => n.removeAttribute('data-rr-hide'));
-    hideSels.forEach(sel => { try { c.querySelectorAll(sel).forEach(n => n.remove()); } catch (e) {} });
+    hideSels.forEach(sel => { try { c.querySelectorAll(sel).forEach(n => { if (!hasPic(n)) n.remove(); }); } catch (e) {} });
+
+    // Bilder: spät ladende Bilder auflösen, Adressen absolut machen, sofort laden
+    c.querySelectorAll('img').forEach(img => {
+      const lazy = ['data-src', 'data-lazy-src', 'data-original', 'data-url', 'data-lazy'].map(a => img.getAttribute(a)).find(Boolean);
+      const src0 = img.getAttribute('src') || '';
+      if (lazy && (!src0 || /^data:/.test(src0) || /placeholder|blank|spacer|lazy|pixel/i.test(src0))) img.setAttribute('src', lazy);
+      const lss = img.getAttribute('data-srcset') || img.getAttribute('data-lazy-srcset');
+      if (lss) img.setAttribute('srcset', lss);
+      try { if (img.getAttribute('src')) img.setAttribute('src', new URL(img.getAttribute('src'), base).href); } catch (e) {}
+      img.setAttribute('loading', 'eager'); img.setAttribute('decoding', 'async');
+      img.classList.remove('lazyload', 'lazyloading', 'lazy');
+      img.style.removeProperty('opacity'); img.style.removeProperty('visibility'); img.style.removeProperty('display');
+    });
+    c.querySelectorAll('source[data-srcset]').forEach(so => so.setAttribute('srcset', so.getAttribute('data-srcset')));
     c.querySelectorAll('[data-rr-hide], script, style, iframe, ins, noscript, button, link').forEach(n => n.remove());
     // Fremdformatierung raus (auch Abstände und Einzüge des Autors – die setzt der Buchmodus selbst)
     c.querySelectorAll('[style]').forEach(n => {
@@ -91,7 +106,7 @@
       const frag = document.createDocumentFragment();
       const style = b.getAttribute('style');
       let curP = null, brs = 0, pend = [];
-      const flush = () => { if (curP && NB(curP.textContent)) frag.appendChild(curP); curP = null; };
+      const flush = () => { if (curP && (NB(curP.textContent) || curP.querySelector('img, picture, svg'))) frag.appendChild(curP); curP = null; };
       kids.forEach(k => {
         if (isBr(k)) { brs++; pend.push(k); return; }
         if (isWs(k)) { pend.push(k); return; }
@@ -106,7 +121,7 @@
     });
 
     // Leerzeilen entfernen; mehrere Leerzeilen hintereinander = Szenenwechsel
-    const blank = el => /^(P|DIV)$/.test(el.nodeName) && !NB(el.textContent) && !el.querySelector('img, table, hr, iframe, svg');
+    const blank = el => /^(P|DIV)$/.test(el.nodeName) && !NB(el.textContent) && !el.querySelector('img, picture, table, hr, iframe, svg');
     [c, ...c.querySelectorAll('div, blockquote')].forEach(box => {
       if (box !== c && !c.contains(box)) return;
       let run = [];
@@ -149,7 +164,7 @@
     };
     const notes = [...doc.querySelectorAll('.author-note-portlet')];
     const isBefore = n => !!(n.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING);
-    const noteClone = n => cleanClone(n.querySelector('.author-note') || n, live, hs);
+    const noteClone = n => cleanClone(n.querySelector('.author-note') || n, live, hs, url);
     return {
       url,
       docTitle: doc.title,
@@ -158,7 +173,7 @@
       nextUrl: findNav('next chapter'),
       prevUrl: findNav('previous chapter'),
       before: notes.filter(isBefore).map(noteClone),
-      body: cleanClone(content, live, hs),
+      body: cleanClone(content, live, hs, url),
       after: notes.filter(n => !isBefore(n)).map(noteClone),
     };
   }
@@ -258,6 +273,8 @@
   .pages p, .pages .para { text-indent: 1.4em; }
   .pages .scene + p, .pages .scene + .para, .pages hr + p, .pages h1 + p, .pages h2 + p, .pages h3 + p,
   .pages table + p, .pages .lead, .pages .nofirst { text-indent: 0; }
+  .pages .sub { text-align: center; text-indent: 0 !important; margin: 0 0 1.2em; font-size: 1.05em; }
+  .pages .sub + p, .pages .sub + .para { text-indent: 0; }
   .pages .lead::first-letter { float: left; font-size: 3.1em; line-height: .85;
     padding: .06em .08em 0 0; color: var(--accent); }
   .pages [style*="center"], .pages center, .pages [align="center"] { text-indent: 0; }
@@ -265,7 +282,14 @@
     margin: .9em 0; letter-spacing: .3em; }
   .pages hr::after { content: "⁂"; }
   .pages h2, .pages h3, .pages h4 { font-size: 1.1em; text-align: center; margin: 1.2em 0 .6em; text-indent: 0; break-after: avoid; }
-  .pages img { max-width: 100%; max-height: calc(var(--h) - 2em); height: auto; display: block; margin: 1em auto; break-inside: avoid; }
+  .pages img { max-width: 100%; max-height: calc(var(--h) - 2.5em); width: auto; height: auto; object-fit: contain; display: block;
+    margin: 1.2em auto; break-inside: avoid; border-radius: 3px; box-shadow: 0 2px 10px rgba(0,0,0,.12); cursor: zoom-in; text-indent: 0; }
+  .pages p:has(> img:only-child), .pages p:has(> a:only-child > img) { text-indent: 0; text-align: center; }
+  .scroll .pages img { max-height: 85vh; }
+  .lb { position: absolute; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center;
+    background: rgba(10,10,10,.94); cursor: zoom-out; padding: 16px; }
+  .lb.show { display: flex; }
+  .lb img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 3px; }
   .pages table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: .82em; line-height: 1.4;
     text-align: left; break-inside: avoid; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   .pages td, .pages th { border: 1px solid var(--line); padding: .35em .6em; vertical-align: top; }
@@ -354,6 +378,7 @@
           <kbd>B</kbd> auf der Kapitelseite: Buchmodus öffnen
         </div>
         <div class="viewport"><div class="clip"><article class="pages"></article></div></div>
+        <div class="lb"><img alt=""></div>
         <div class="toast" role="status"><span></span><button type="button"></button></div>
         <footer class="foot"><span class="pi"></span><div class="prog"><i></i></div><span class="pr"></span></footer>
       </div>
@@ -376,7 +401,11 @@
       const b = e.target.closest('button'); if (!b) return;
       act(b.dataset.a);
     });
+    const lb = root.querySelector('.lb');
+    lb.addEventListener('click', () => lb.classList.remove('show'));
     viewport.addEventListener('click', e => {
+      const im = e.target.closest('img');
+      if (im) { e.preventDefault(); ensureFs(); lb.querySelector('img').src = im.currentSrc || im.src; lb.classList.add('show'); return; }
       if (e.target.closest('a, button, .note')) { ensureFs(); return; }
       ensureFs();
       if (s.mode !== 'paged') { toggleBars(); return; }
@@ -496,8 +525,18 @@
     };
     d.before.forEach(addNote);
     const body = d.body.cloneNode(true); body.className = 'first'; pages.appendChild(body);
-    const lead = [...body.querySelectorAll('p, .para')].find(p => !p.classList.contains('scene') && p.textContent.replace(/\u00a0/g, ' ').trim()
-      && !/center/.test(p.getAttribute('style') || '') && !p.closest('table'));
+    // Zwischentitel des Autors am Kapitelanfang (ganz fett/unterstrichen) zentrieren, Anfangsbuchstabe erst danach
+    const T = el => el.textContent.replace(/\u00a0/g, ' ').trim();
+    const isHeadLike = p => { const t = T(p); if (!t || t.length > 140) return false;
+      const strong = [...p.querySelectorAll('strong, b, u, h1, h2, h3, h4')].map(T).join('');
+      return strong.replace(/\s/g, '') === t.replace(/\s/g, ''); };
+    let lead = null;
+    for (const p of body.querySelectorAll('p, .para')) {
+      if (p.classList.contains('scene') || p.closest('table') || !T(p)) continue;
+      if (isHeadLike(p)) { p.classList.add('sub'); continue; }
+      if (/center/.test(p.getAttribute('style') || '')) continue;
+      lead = p; break;
+    }
     if (lead) lead.classList.add('lead');
     d.after.forEach(addNote);
     const end = add('div', 'end', '— Ende des Kapitels —');
@@ -712,6 +751,8 @@
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     const k = e.key;
     if (!isOpen) { if (k === 'b' || k === 'B') { e.preventDefault(); open(); } return; }
+    const lbo = root.querySelector('.lb.show');
+    if (lbo) { if (k === 'Escape' || k === ' ' || k === 'Enter') { e.preventDefault(); lbo.classList.remove('show'); } return; }
     const map = {
       ArrowRight: () => s.mode === 'paged' && next(), ArrowLeft: () => s.mode === 'paged' && prev(),
       PageDown: next, PageUp: prev, ' ': () => (e.shiftKey ? prev() : next()),
